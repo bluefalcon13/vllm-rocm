@@ -17,6 +17,22 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag vllm-rocm:latest
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        push: false
+        tags: vllm-rocm:latest
+        # cache-from: type=local,src=/home/jason-fisher/docker-cache
+        # cache-to: type=local,dest=/home/jason-fisher/docker-cache-new,mode=max
+
+    # - name: Move cache
+    #   # This prevents the cache from growing indefinitely and ensures 
+    #   # the next build uses the most recent layers
+    #   run: |
+    #     rm -rf /home/jason-fisher/docker-cache
+    #     mv /home/jason-fisher/docker-cache-new /home/jason-fisher/docker-cache
