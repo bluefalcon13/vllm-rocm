@@ -1,82 +1,63 @@
-# STAGE 1: TheRock Builder
-FROM ubuntu:24.04  AS builder
+FROM rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.9.1
 
-# Set target for 9070XT
-ENV AMDGPU_TARGETS=gfx1201
 WORKDIR /build
 
-# Install TheRock build dependencies
-RUN apt-get update -y && \
-    apt-get install -y --no-install-recommends \
-    automake \
-    bison \
+ENV PYTORCH_ROCM_ARCH="gfx1201"
+
+# install flash attention
+RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+    cd flash-attention && \
+    FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" GPU_ARCHS="gfx1201" python setup.py install
+
+# install aiter
+RUN git clone --recursive https://github.com/ROCm/aiter.git && \
+    cd aiter && \
+    git checkout v0.1.9 && \
+    git submodule sync && git submodule update --init --recursive && \
+    pip install -e . && \
+    pip install -r requirements-triton-comms.txt
+
+# install mori deps
+RUN apt update && apt install -y --no-install-recommends \
+    cython3 \
+    ibverbs-utils \
+    openmpi-bin \
+    libopenmpi-dev \
+    libpci-dev \
     cmake \
-    flex \
-    g++ \
-    gfortran \
-    git \
-    libegl1-mesa-dev \
-    libtool \
-    ninja-build \
-    patchelf \
-    pkg-config \
-    python3-dev \
-    python3-venv \
-    texinfo \
-    xxd && \
+    libdw1 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Setup venv and add to path
-RUN python3 -m venv ./.venv
-ENV PATH="/build/.venv/bin:$PATH"
+# # install mori
+ARG MORI_BRANCH="2d02c6a9"
+RUN git clone https://github.com/ROCm/mori.git && \
+    cd mori && \
+    git checkout ${MORI_BRANCH} && \
+    git submodule sync; git submodule update --init --recursive && \
+    pip install -r requirements-build.txt && \
+    MORI_GPU_ARCHS="gfx942;gfx950" pip install -e . --no-build-isolation
 
-# pull TheRock build system
-RUN git clone https://github.com/ROCm/TheRock.git ./therock
+# install vllm
+RUN git clone https://github.com/vllm-project/vllm.git && \
+    cd vllm && \
+    git checkout v0.15.0 && \
+    pip install --upgrade pip && \
+    pip install /opt/rocm/share/amd_smi && \
+    pip install --upgrade numba \
+    scipy \
+    huggingface-hub[cli,hf_transfer] \
+    setuptools_scm && \
+    pip install -r requirements/rocm.txt && \
+    python3 setup.py develop
 
-WORKDIR /build/therock
+ENV VLLM_ROCM_USE_AITER=0
+ENV VLLM_USE_TRITON_FLASH_ATTN=1
+ENV VLLM_TARGET_DEVICE=rocm
+ENV SAFETENSORS_FAST_GPU=1
+ENV HIP_FORCE_DEV_KERNARG=1
 
-# install venv python dependencies
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-# download submoduiles and apply patches
-RUN python3 ./build_tools/fetch_sources.py
-
-# RUN python3 -m venv .venv && source .venv/bin/activate && \
-#     pip install --upgrade pip && \
-#     pip install -r requirements.txt
-
-# # 2. Build AITER with CF files enabled
-# # AITER is often built as a separate wheel or as part of the vLLM setup
-# RUN cd vllm/model_executor/layers/quantization/aiter && \
-#     python3 setup.py bdist_wheel
-
-# # 3. Build vLLM
-# RUN python3 setup.py bdist_wheel
-
-# FROM ubuntu:24.04 AS runtime
-# ENV PYTHONUNBUFFERED=1
-
-# # Initialize the runtime image
-# # Modify to pre-install dev tools and ROCm packages
-# ARG ROCM_VERSION=7.2
-# ARG AMDGPU_VERSION=30.30
-
-# # Get amd gpg keys and add to apt keyrings
-# RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-#     ca-certificates curl gnupg && \
-#     curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | \
-#     gpg --dearmor -o /usr/share/keyrings/rocm-stack-release.gpg && \
-#     apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# # Update your sources to use the new unified keyring
-# RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm-stack-release.gpg] http://repo.radeon.com/rocm/apt/7.2 noble main" \
-#     > /etc/apt/sources.list.d/rocm.list && \
-#     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm-stack-release.gpg] https://repo.radeon.com/amdgpu/30.30/ubuntu noble main" \
-#     > /etc/apt/sources.list.d/amdgpu.list
-
-# RUN <<EOF cat > /etc/apt/preferences.d/rocm-pin-600
-# Package: *
-# Pin: release o=repo.radeon.com
-# Pin-Priority: 600
-# EOF
+ENV COMMON_WORKDIR=/workspace
+# Workaround for ROCm profiler limits
+RUN echo "ROCTRACER_MAX_EVENTS=10000000" > ${COMMON_WORKDIR}/libkineto.conf
+ENV KINETO_CONFIG="${COMMON_WORKDIR}/libkineto.conf"
+RUN echo "VLLM_BASE_IMAGE=${BASE_IMAGE}" >> ${COMMON_WORKDIR}/versions.txt
