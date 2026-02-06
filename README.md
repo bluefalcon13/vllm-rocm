@@ -57,7 +57,7 @@ While the RDNA 4 architecture provides excellent raw generation speeds (~23ms pe
 
 ### 🛠️ Build Configuration & Security Notes
 
-This build requires **Docker Buildx** with entitlement for insecure security specifications to allow the `git clone` operations within the custom build stages.
+This build requires **Docker Buildx** with entitlement for insecure security specifications to allow the vLLM build system to better see the hardware.
 
 #### **1. Initialize the Unsecure Builder**
 Before building, you must create a builder instance that permits the `--security=insecure` flag used in the Dockerfile:
