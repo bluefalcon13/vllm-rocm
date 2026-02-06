@@ -1,63 +1,85 @@
-FROM rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.9.1
+ARG AMDGPU_FAMILY=gfx120X-all
+ARG GPU_ARCH=gfx1201
+ARG VERSION_ENCODED=7.10.0
 
-WORKDIR /build
+FROM ubuntu:24.04 AS base
+ENV PYTHONUNBUFFERED=1
+ARG AMDGPU_FAMILY
+ARG VERSION_ENCODED
+ARG GPU_ARCH
 
-ENV PYTORCH_ROCM_ARCH="gfx1201"
+# install rocm dependencies via apt
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    file \
+    kmod \
+    git \
+    libdw1t64 \
+    libelf1 \
+    libncurses6 \
+    libnuma1 \
+    libssl3 \
+    libunwind8 \
+    perl \
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-venv && \
+    rm -rf /var/lib/apt/lists/* && \
+    cd /opt && python3 -m venv ./venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# # install rocm from tarball
+# ADD https://repo.amd.com/rocm/tarball/therock-dist-linux-${AMDGPU_FAMILY}-${VERSION_ENCODED}.tar.gz /tmp/rocm-tarball.tar.gz
+# ADD ./install_rocm_tar.sh /tmp/install_rocm_tar.sh
+# RUN chmod +x /tmp/install_rocm_tar.sh && \
+#     /tmp/install_rocm_tar.sh ${VERSION_ENCODED} ${AMDGPU_FAMILY} && \
+#     rm -rf /tmp/rocm-tarball.tar.gz install_rocm_tar.sh
+# ENV ROCM_PATH="/opt/rocm"
+# ENV PATH="${ROCM_PATH}/bin:${PATH}"
+    
+# install pytorch
+RUN pip install --index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/ rocm[base,devel,libraries-gfx120x-all] torch torchaudio torchvision
+RUN pip install packaging setuptools ninja cmake
+RUN rocm-sdk init
+
+ENV ROCM_PATH="/opt/venv"
 
 # install flash attention
-RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
+# NOTE: this flash attention enables gfx12 support
+WORKDIR /workspace
+# RUN git clone https://github.com/ROCm/flash-attention.git && \
+RUN git clone https://github.com/hyoon1/flash-attention.git && \
     cd flash-attention && \
-    FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" GPU_ARCHS="gfx1201" python setup.py install
+    git checkout enable-ck-gfx12 && \
+    # git checkout 0e60e394 && \
+    FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" python setup.py install
 
 # install aiter
-RUN git clone --recursive https://github.com/ROCm/aiter.git && \
+RUN git clone https://github.com/EmbeddedLLM/aiter.git && \
     cd aiter && \
-    git checkout v0.1.9 && \
+    git checkout support_gfx1201 && \
     git submodule sync && git submodule update --init --recursive && \
-    pip install -e . && \
+    pip install -e ./ && \
     pip install -r requirements-triton-comms.txt
 
-# install mori deps
-RUN apt update && apt install -y --no-install-recommends \
-    cython3 \
-    ibverbs-utils \
-    openmpi-bin \
-    libopenmpi-dev \
-    libpci-dev \
-    cmake \
-    libdw1 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# # install mori
-ARG MORI_BRANCH="2d02c6a9"
-RUN git clone https://github.com/ROCm/mori.git && \
-    cd mori && \
-    git checkout ${MORI_BRANCH} && \
-    git submodule sync; git submodule update --init --recursive && \
-    pip install -r requirements-build.txt && \
-    MORI_GPU_ARCHS="gfx942;gfx950" pip install -e . --no-build-isolation
-
 # install vllm
-RUN git clone https://github.com/vllm-project/vllm.git && \
-    cd vllm && \
-    git checkout v0.15.0 && \
-    pip install --upgrade pip && \
+RUN pip install --upgrade pip && \
+    # Build & install AMD SMI
     pip install /opt/rocm/share/amd_smi && \
+    # Install dependencies
     pip install --upgrade numba \
-    scipy \
-    huggingface-hub[cli,hf_transfer] \
-    setuptools_scm && \
+        scipy \
+        huggingface-hub[cli,hf_transfer] \
+        setuptools_scm
+
+RUN git clone https://github.com/vllm-project/vllm.git && \
+    cd ./vllm && \
+    git checkout v0.15.1 && \
     pip install -r requirements/rocm.txt && \
-    python3 setup.py develop
-
-ENV VLLM_ROCM_USE_AITER=0
-ENV VLLM_USE_TRITON_FLASH_ATTN=1
-ENV VLLM_TARGET_DEVICE=rocm
-ENV SAFETENSORS_FAST_GPU=1
-ENV HIP_FORCE_DEV_KERNARG=1
-
-ENV COMMON_WORKDIR=/workspace
-# Workaround for ROCm profiler limits
-RUN echo "ROCTRACER_MAX_EVENTS=10000000" > ${COMMON_WORKDIR}/libkineto.conf
-ENV KINETO_CONFIG="${COMMON_WORKDIR}/libkineto.conf"
-RUN echo "VLLM_BASE_IMAGE=${BASE_IMAGE}" >> ${COMMON_WORKDIR}/versions.txt
+    PYTORCH_ROCM_ARCH="${GPU_ARCH}" \
+    GPU_TARGETS="${GPU_ARCH}" \
+    python3 setup.py install
