@@ -52,3 +52,31 @@ While the RDNA 4 architecture provides excellent raw generation speeds (~23ms pe
 - High Contention: With over 190 requests waiting in the queue, the Time To First Token (TTFT) scales into several minutes.
 
 - System RAM Underutilization: Host memory usage remains low (~13.1 GB) because the discrete GPU cannot effectively offload the active KV-Cache to system RAM.
+
+---
+
+### 🛠️ Build Configuration & Security Notes
+
+This build requires **Docker Buildx** with entitlement for insecure security specifications to allow the `git clone` operations within the custom build stages.
+
+#### **1. Initialize the Unsecure Builder**
+Before building, you must create a builder instance that permits the `--security=insecure` flag used in the Dockerfile:
+
+```bash
+docker buildx create --name unsecure_builder --buildkitd-flags '--allow-insecure-entitlement security.insecure' --use
+docker buildx inspect --bootstrap
+```
+
+#### **2. Execute the Build**
+Use the following command to build the image for the `gfx1201` architecture. This command enables the necessary entitlements to bypass the restricted network/security sandbox for the specialized kernel compilation steps:
+
+```bash
+docker buildx build --allow security.insecure -t vllm-rocm-gfx1201:latest . --load
+```
+
+#### Note on Security
+The `--security=insecure` flag in the Dockerfile is utilized specifically to facilitate the identification of the hardware. 
+Ensure you are building in a trusted environment and audit the Dockerfile stages if deploying to production.
+Additionally, even though it is built in a docker, it does need to be able to see the hardware enough that vLLM will make some intelligent build decisions. 
+vLLM is complicated, and tries to simplify the build process as much as possible.
+Open to pull requests from folks who have more vLLM build experience or the time to sort through it all!
